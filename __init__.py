@@ -42,7 +42,6 @@ class Move:
 class Board:
     def __init__(self):
         self.grid = [[EMPTY for _ in range(8)] for _ in range(8)]
-        # 初期配置
         self.grid[3][3] = WHITE
         self.grid[3][4] = BLACK
         self.grid[4][3] = BLACK
@@ -59,7 +58,6 @@ class Board:
         return black, white
 
     def print(self):
-        # 列ラベル
         print("  a b c d e f g h")
         for r in range(8):
             row = []
@@ -94,13 +92,10 @@ class Board:
             for c in range(8):
                 if self.grid[r][c] != EMPTY:
                     continue
-                ok = False
                 for dr, dc in DIRECTIONS:
                     if self._flips_in_dir(player, r, c, dr, dc):
-                        ok = True
+                        moves.append(Move(r, c))
                         break
-                if ok:
-                    moves.append(Move(r, c))
         return moves
 
     def apply_move(self, player: int, move: Move) -> bool:
@@ -153,7 +148,6 @@ def disc_diff(board: Board, player: int) -> int:
     return my - op
 
 def evaluate(board: Board, player: int) -> float:
-    # 終盤は石差を重視
     empties = sum(1 for r in range(8) for c in range(8) if board.grid[r][c] == EMPTY)
     if board.game_over():
         d = disc_diff(board, player)
@@ -165,7 +159,6 @@ def evaluate(board: Board, player: int) -> float:
     cor = corner_score(board, player)
     mob = mobility(board, player)
 
-    # 係数（序盤/中盤/終盤で少し変える）
     if empties > 40:
         return 1.0*pos + 25.0*cor + 4.0*mob
     elif empties > 15:
@@ -175,7 +168,6 @@ def evaluate(board: Board, player: int) -> float:
 
 # ========= AI（αβミニマックス） =========
 def order_moves(board: Board, player: int, moves: List[Move]) -> List[Move]:
-    # 角優先、位置重みでざっくりソート（枝刈り効率UP）
     def key(m: Move):
         w = POS_WEIGHTS[m.r][m.c]
         if (m.r, m.c) in [(0,0),(0,7),(7,0),(7,7)]:
@@ -185,8 +177,8 @@ def order_moves(board: Board, player: int, moves: List[Move]) -> List[Move]:
 
 def alphabeta(board: Board, player_to_move: int, root_player: int,
               depth: int, alpha: float, beta: float,
-              tt: Dict[Tuple[Tuple[int,...], int, int], Tuple[float, Optional[Move]]]) -> Tuple[float, Optional[Move]]:
-    # トランスポジションテーブルキー
+              tt: Dict[Tuple[Tuple[int,...], int, int], Tuple[float, Optional[Move]]]
+              ) -> Tuple[float, Optional[Move]]:
     key_grid = tuple(tuple(row) for row in board.grid)
     key = (key_grid, player_to_move, depth)
     if key in tt:
@@ -199,31 +191,31 @@ def alphabeta(board: Board, player_to_move: int, root_player: int,
 
     moves = board.legal_moves(player_to_move)
     if not moves:
-        # パス
-        val, _ = alphabeta(board, opponent(player_to_move), root_player, depth-1, alpha, beta, tt)
+        val, _ = alphabeta(board, opponent(player_to_move),
+                           root_player, depth-1, alpha, beta, tt)
         tt[key] = (val, None)
         return val, None
 
     best_move = None
     if player_to_move == root_player:
-        # 最大化
         value = -math.inf
         for m in order_moves(board, player_to_move, moves):
             b2 = board.copy()
             b2.apply_move(player_to_move, m)
-            v, _ = alphabeta(b2, opponent(player_to_move), root_player, depth-1, alpha, beta, tt)
+            v, _ = alphabeta(b2, opponent(player_to_move),
+                             root_player, depth-1, alpha, beta, tt)
             if v > value:
                 value, best_move = v, m
             alpha = max(alpha, value)
             if alpha >= beta:
                 break
     else:
-        # 最小化
         value = math.inf
         for m in order_moves(board, player_to_move, moves):
             b2 = board.copy()
             b2.apply_move(player_to_move, m)
-            v, _ = alphabeta(b2, opponent(player_to_move), root_player, depth-1, alpha, beta, tt)
+            v, _ = alphabeta(b2, opponent(player_to_move),
+                             root_player, depth-1, alpha, beta, tt)
             if v < value:
                 value, best_move = v, m
             beta = min(beta, value)
@@ -233,32 +225,32 @@ def alphabeta(board: Board, player_to_move: int, root_player: int,
     tt[key] = (value, best_move)
     return value, best_move
 
-def ai_choose_move(board: Board, ai_player: int, max_depth: int = 4, time_limit_sec: float = 1.2) -> Optional[Move]:
-    # 反復深化（時間制限まで深くする）
+# ★ AI関数名：myai
+def myai(board: Board, ai_player: int,
+         max_depth: int = 4, time_limit_sec: float = 1.2) -> Optional[Move]:
     start = time.time()
     best = None
     tt: Dict[Tuple[Tuple[int,...], int, int], Tuple[float, Optional[Move]]] = {}
     for depth in range(1, max_depth + 1):
         if time.time() - start > time_limit_sec:
             break
-        val, move = alphabeta(board, ai_player, ai_player, depth, -math.inf, math.inf, tt)
+        _, move = alphabeta(board, ai_player, ai_player,
+                            depth, -math.inf, math.inf, tt)
         if time.time() - start > time_limit_sec:
             break
         if move is not None:
             best = move
     return best
 
-# ========= 入力 =========
+# ========= 入力処理 =========
 def parse_move(s: str) -> Optional[Move]:
     s = s.strip().lower()
     if s in ("pass", "p"):
         return None
-    # "d3" 形式
     if len(s) == 2 and s[0] in "abcdefgh" and s[1] in "12345678":
         c = ord(s[0]) - ord("a")
         r = int(s[1]) - 1
         return Move(r, c)
-    # "3 4" 形式(1-indexed)
     parts = s.replace(",", " ").split()
     if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
         r = int(parts[0]) - 1
@@ -280,34 +272,27 @@ def main():
     print("入力例: d3  または 3 4   / パスは 'pass'")
     print()
 
-    turn = BLACK  # 黒から
+    turn = BLACK
     while not board.game_over():
         board.print()
         print()
 
-        moves = board.legal_moves(turn)
-        if not moves:
-            print(("●" if turn == BLACK else "○") + " は置ける手がないのでパス。\n")
+        if not board.has_any_move(turn):
+            print(("●" if turn == BLACK else "○") + " はパス\n")
             turn = opponent(turn)
             continue
 
         if turn == human:
             while True:
-                s = input("あなたの手 (例 d3): ")
+                s = input("あなたの手: ")
                 m = parse_move(s)
-                if m is None:
-                    print("パスはできません（置ける手があります）。もう一度。")
-                    continue
-                if board.apply_move(human, m):
+                if m and board.apply_move(human, m):
                     break
-                print("その手は置けません。合法手を選んでください。")
+                print("その手は置けません")
         else:
             print("AI思考中...")
-            m = ai_choose_move(board, ai_player=ai, max_depth=5, time_limit_sec=1.5)
-            if m is None:
-                # 念のため
-                print("AIはパス。\n")
-            else:
+            m = myai(board, ai_player=ai, max_depth=5, time_limit_sec=1.5)
+            if m:
                 board.apply_move(ai, m)
                 print(f"AIの手: {move_to_str(m)}\n")
 
