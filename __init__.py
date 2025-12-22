@@ -81,3 +81,23 @@ try:
     myai()
 except Exception:
     pass
+
+# ここまでに def myai(): ... が必ず存在している前提
+
+__all__ = ["myai"]  # from a020 import myai を安定させる
+
+def _autostart_if_colab():
+    try:
+        import google.colab  # Colab上だけ
+    except Exception:
+        return
+
+    # import時自動起動（失敗してもimportは壊さない）
+    try:
+        myai()
+    except Exception as e:
+        # ここで落ちても myai の import は成功させたいので握りつぶす
+        # ただしデバッグしやすいようにメッセージは出す
+        print("[a020] autostart failed:", repr(e))
+
+_autostart_if_colab()
