@@ -1,103 +1,126 @@
-def myai():
-    import random
-    from IPython.display import display, HTML, clear_output
-    import ipywidgets as widgets
+# a020/__init__.py
+import random
 
-    EMPTY, BLACK, WHITE = ".", "B", "W"
-    DIRS = [(-1,-1),(-1,0),(-1,1),
-            (0,-1),       (0,1),
-            (1,-1),(1,0),(1,1)]
+def myai(board, stone):
+    """
+    sakura.othello が呼ぶAI関数
+      - board: 盤面
+      - stone: 手番（たぶん othello.BLACK / othello.WHITE など）
+    戻り値:
+      - (x, y) 形式（※ sakura側は x,y = ... と受け取っている）
+    """
+    moves = _valid_moves(board, stone)
+    if not moves:
+        return None  # 置けないならパス（sakura側が処理する）
 
-    def opp(p): return WHITE if p == BLACK else BLACK
-    def inside(r,c): return 0 <= r < 8 and 0 <= c < 8
+    # 角優先
+    corners = {(0,0),(0,7),(7,0),(7,7)}
+    corner_moves = [m for m in moves if m in corners]
+    if corner_moves:
+        return random.choice(corner_moves)
 
-    def new_board():
-        b = [[EMPTY]*8 for _ in range(8)]
-        b[3][3]=WHITE; b[3][4]=BLACK
-        b[4][3]=BLACK; b[4][4]=WHITE
-        return b
-
-    def flips_dir(b,p,r,c,dr,dc):
-        rr,cc=r+dr,c+dc; out=[]
-        while inside(rr,cc) and b[rr][cc]==opp(p):
-            out.append((rr,cc)); rr+=dr; cc+=dc
-        return out if out and inside(rr,cc) and b[rr][cc]==p else []
-
-    def legal(b,p):
-        return [(r,c) for r in range(8) for c in range(8)
-                if b[r][c]==EMPTY and
-                any(flips_dir(b,p,r,c,dr,dc) for dr,dc in DIRS)]
-
-    def move(b,p,r,c):
-        f=[]
-        for dr,dc in DIRS:
-            f+=flips_dir(b,p,r,c,dr,dc)
-        if not f: return False
-        b[r][c]=p
-        for rr,cc in f: b[rr][cc]=p
-        return True
-
-    board = new_board()
-    turn = BLACK
-
-    box = widgets.Text(placeholder="d3", description="Move:")
-    btn = widgets.Button(description="Place", button_style="primary")
-    msg = widgets.HTML()
-
-    def draw():
-        clear_output(wait=True)
-        html="<table style='border-collapse:collapse'>"
-        html+="<tr><td></td>"+"".join(f"<td>{c}</td>" for c in "abcdefgh")+"</tr>"
-        for r in range(8):
-            html+=f"<tr><td>{r+1}</td>"
-            for c in range(8):
-                ch="●" if board[r][c]==BLACK else "○" if board[r][c]==WHITE else ""
-                html+=f"<td style='width:40px;height:40px;background:#2e7d32;color:white;text-align:center;font-size:22px;border:1px solid black'>{ch}</td>"
-            html+="</tr>"
-        html+="</table>"
-        display(HTML("<h3>Othello (auto start)</h3>"))
-        display(HTML(html))
-        display(widgets.HBox([box,btn]))
-        display(msg)
-
-    def on_click(_):
-        nonlocal turn
-        s=box.value.lower().replace(" ",""); box.value=""
-        if len(s)<2: return
-        r=int(s[1])-1 if s[0].isalpha() else int(s[:-1])-1
-        c=ord(s[0])-97 if s[0].isalpha() else ord(s[-1])-97
-        if not inside(r,c): return
-        if move(board,BLACK,r,c):
-            draw()
-
-    btn.on_click(on_click)
-    draw()
+    # それ以外：簡易評価（角周りは避ける、反転数が多いほど良い）
+    best = None
+    best_score = -10**9
+    for x, y in moves:
+        sc = _move_score(board, stone, x, y)
+        if sc > best_score:
+            best_score = sc
+            best = (x, y)
+    return best
 
 
-# ===== ここが最重要 =====
-# Colabで import された瞬間に自動起動
-try:
-    import google.colab
-    myai()
-except Exception:
-    pass
+# ---- 以下は内部処理 ----
 
-# ここまでに def myai(): ... が必ず存在している前提
+DIRS = [(-1,-1),(-1,0),(-1,1),
+        (0,-1),       (0,1),
+        (1,-1),(1,0),(1,1)]
 
-__all__ = ["myai"]  # from a020 import myai を安定させる
+# 角の斜め/隣（序盤危険）
+X_SQ = {(1,1),(1,6),(6,1),(6,6)}
+C_SQ = {(0,1),(1,0),(0,6),(1,7),(6,0),(7,1),(6,7),(7,6)}
 
-def _autostart_if_colab():
+def _inside(x, y):
+    return 0 <= x < 8 and 0 <= y < 8
+
+def _cell(board, x, y):
+    # board[x][y] でも board[y][x] でもあり得るので、両方試す
     try:
-        import google.colab  # Colab上だけ
+        return board[x][y]
     except Exception:
-        return
+        return board[y][x]
 
-    # import時自動起動（失敗してもimportは壊さない）
+def _set_cell(board, x, y, v):
     try:
-        myai()
-    except Exception as e:
-        # ここで落ちても myai の import は成功させたいので握りつぶす
-        # ただしデバッグしやすいようにメッセージは出す
-        print("[a020] autostart failed:", repr(e))
+        board[x][y] = v
+    except Exception:
+        board[y][x] = v
 
-_autostart_if_colab()
+def _is_empty(v):
+    # sakura側の空表現が '.' や 0 など複数あり得るので広めに対応
+    return v in (0, ".", "0", None, " ")
+
+def _opp(stone):
+    # 石の表現が文字でも数値でも「異なる値」として扱えるように
+    # board内に stone 以外の「もう一方の石」を探して推定するのが本当は安全だが、
+    # sakuraは通常 BLACK/WHITE の2値なので、ここは board を見て推定する。
+    return None  # 呼び出し側で推定する
+
+def _infer_opponent(board, stone):
+    vals = set()
+    for i in range(8):
+        for j in range(8):
+            v = _cell(board, i, j)
+            if not _is_empty(v):
+                vals.add(v)
+    # 盤面に2種類あるなら stoneじゃない方
+    for v in vals:
+        if v != stone:
+            return v
+    # まだ1種類しかないなら「stoneと違う適当な値」は作れないので、
+    # ここでは stone を返してしまう（この場合そもそも合法手判定に支障が出るが、初期盤面なら通常2種ある）
+    return stone
+
+def _flips(board, stone, x, y, dx, dy, opp):
+    xx, yy = x + dx, y + dy
+    out = []
+    while _inside(xx, yy) and _cell(board, xx, yy) == opp:
+        out.append((xx, yy))
+        xx += dx
+        yy += dy
+    if out and _inside(xx, yy) and _cell(board, xx, yy) == stone:
+        return out
+    return []
+
+def _valid_moves(board, stone):
+    opp = _infer_opponent(board, stone)
+    moves = []
+    for x in range(8):
+        for y in range(8):
+            if not _is_empty(_cell(board, x, y)):
+                continue
+            ok = False
+            for dx, dy in DIRS:
+                if _flips(board, stone, x, y, dx, dy, opp):
+                    ok = True
+                    break
+            if ok:
+                moves.append((x, y))
+    return moves
+
+def _move_score(board, stone, x, y):
+    # 危険マスを避ける（角が空いてる序盤ほど効くが簡易でOK）
+    score = 0
+    if (x, y) in X_SQ:
+        score -= 30
+    if (x, y) in C_SQ:
+        score -= 15
+
+    # 反転数が多いほど加点
+    opp = _infer_opponent(board, stone)
+    flips = 0
+    for dx, dy in DIRS:
+        flips += len(_flips(board, stone, x, y, dx, dy, opp))
+    score += flips
+
+    return score
