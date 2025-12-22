@@ -1,312 +1,317 @@
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
-import math
+# Colab-friendly Othello (Human vs CPU) using ipywidgets
+# Run this cell in Google Colab.
+
+import random
 import time
+from IPython.display import display, HTML, clear_output
+import ipywidgets as widgets
 
-# ========= 基本設定 =========
-EMPTY = 0
-BLACK = 1   # 人間
-WHITE = -1  # AI
+EMPTY = "."
+BLACK = "B"  # Human
+WHITE = "W"  # CPU
 
-DIRECTIONS = [
-    (-1, -1), (-1, 0), (-1, 1),
-    ( 0, -1),          ( 0, 1),
-    ( 1, -1), ( 1, 0), ( 1, 1),
-]
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),          (0, 1),
+              (1, -1),  (1, 0), (1, 1)]
 
-# 位置評価（角を強く、角隣を弱く、辺を強め）
-POS_WEIGHTS = [
-    [120, -20,  20,   5,   5,  20, -20, 120],
-    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
-    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
-    [  5,  -5,   3,   3,   3,   3,  -5,   5],
-    [  5,  -5,   3,   3,   3,   3,  -5,   5],
-    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
-    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
-    [120, -20,  20,   5,   5,  20, -20, 120],
-]
+CORNERS = {(0,0),(0,7),(7,0),(7,7)}
+X_SQUARES = {(1,1),(1,6),(6,1),(6,6)}
+C_SQUARES = {(0,1),(1,0),(0,6),(1,7),(6,0),(7,1),(6,7),(7,6)}
 
-def opponent(player: int) -> int:
-    return -player
+def opponent(p):
+    return WHITE if p == BLACK else BLACK
 
-def inside(r: int, c: int) -> bool:
+def in_bounds(r,c):
     return 0 <= r < 8 and 0 <= c < 8
 
-# ========= 盤面 =========
-@dataclass(frozen=True)
-class Move:
-    r: int
-    c: int
+def new_board():
+    b = [[EMPTY]*8 for _ in range(8)]
+    b[3][3] = WHITE
+    b[3][4] = BLACK
+    b[4][3] = BLACK
+    b[4][4] = WHITE
+    return b
 
-class Board:
-    def __init__(self):
-        self.grid = [[EMPTY for _ in range(8)] for _ in range(8)]
-        self.grid[3][3] = WHITE
-        self.grid[3][4] = BLACK
-        self.grid[4][3] = BLACK
-        self.grid[4][4] = WHITE
+def count_stones(board):
+    b = sum(cell == BLACK for row in board for cell in row)
+    w = sum(cell == WHITE for row in board for cell in row)
+    return b, w
 
-    def copy(self) -> "Board":
-        b = Board.__new__(Board)
-        b.grid = [row[:] for row in self.grid]
-        return b
+def flippable_in_direction(board, player, r, c, dr, dc):
+    rr, cc = r+dr, c+dc
+    opp = opponent(player)
+    flips = []
+    while in_bounds(rr,cc) and board[rr][cc] == opp:
+        flips.append((rr,cc))
+        rr += dr
+        cc += dc
+    if flips and in_bounds(rr,cc) and board[rr][cc] == player:
+        return flips
+    return []
 
-    def count(self) -> Tuple[int, int]:
-        black = sum(1 for r in range(8) for c in range(8) if self.grid[r][c] == BLACK)
-        white = sum(1 for r in range(8) for c in range(8) if self.grid[r][c] == WHITE)
-        return black, white
-
-    def print(self):
-        print("  a b c d e f g h")
-        for r in range(8):
-            row = []
-            for c in range(8):
-                v = self.grid[r][c]
-                if v == BLACK:
-                    row.append("●")
-                elif v == WHITE:
-                    row.append("○")
-                else:
-                    row.append("・")
-            print(f"{r+1} " + " ".join(row))
-        b, w = self.count()
-        print(f"score: ●={b}  ○={w}")
-
-    def _flips_in_dir(self, player: int, r: int, c: int, dr: int, dc: int) -> List[Tuple[int, int]]:
-        flips = []
-        rr, cc = r + dr, c + dc
-        if not inside(rr, cc) or self.grid[rr][cc] != opponent(player):
-            return []
-        while inside(rr, cc) and self.grid[rr][cc] == opponent(player):
-            flips.append((rr, cc))
-            rr += dr
-            cc += dc
-        if inside(rr, cc) and self.grid[rr][cc] == player:
-            return flips
-        return []
-
-    def legal_moves(self, player: int) -> List[Move]:
-        moves = []
-        for r in range(8):
-            for c in range(8):
-                if self.grid[r][c] != EMPTY:
-                    continue
-                for dr, dc in DIRECTIONS:
-                    if self._flips_in_dir(player, r, c, dr, dc):
-                        moves.append(Move(r, c))
-                        break
-        return moves
-
-    def apply_move(self, player: int, move: Move) -> bool:
-        if self.grid[move.r][move.c] != EMPTY:
-            return False
-        flips_all = []
-        for dr, dc in DIRECTIONS:
-            flips_all.extend(self._flips_in_dir(player, move.r, move.c, dr, dc))
-        if not flips_all:
-            return False
-        self.grid[move.r][move.c] = player
-        for rr, cc in flips_all:
-            self.grid[rr][cc] = player
-        return True
-
-    def has_any_move(self, player: int) -> bool:
-        return len(self.legal_moves(player)) > 0
-
-    def game_over(self) -> bool:
-        return (not self.has_any_move(BLACK)) and (not self.has_any_move(WHITE))
-
-# ========= 評価関数 =========
-def mobility(board: Board, player: int) -> int:
-    return len(board.legal_moves(player)) - len(board.legal_moves(opponent(player)))
-
-def positional_score(board: Board, player: int) -> int:
-    s = 0
+def get_valid_moves(board, player):
+    moves = []
     for r in range(8):
         for c in range(8):
-            if board.grid[r][c] == player:
-                s += POS_WEIGHTS[r][c]
-            elif board.grid[r][c] == opponent(player):
-                s -= POS_WEIGHTS[r][c]
-    return s
-
-def corner_score(board: Board, player: int) -> int:
-    corners = [(0,0),(0,7),(7,0),(7,7)]
-    s = 0
-    for r,c in corners:
-        if board.grid[r][c] == player:
-            s += 25
-        elif board.grid[r][c] == opponent(player):
-            s -= 25
-    return s
-
-def disc_diff(board: Board, player: int) -> int:
-    b, w = board.count()
-    my = b if player == BLACK else w
-    op = w if player == BLACK else b
-    return my - op
-
-def evaluate(board: Board, player: int) -> float:
-    empties = sum(1 for r in range(8) for c in range(8) if board.grid[r][c] == EMPTY)
-    if board.game_over():
-        d = disc_diff(board, player)
-        if d > 0: return 1e6 + d
-        if d < 0: return -1e6 + d
-        return 0
-
-    pos = positional_score(board, player)
-    cor = corner_score(board, player)
-    mob = mobility(board, player)
-
-    if empties > 40:
-        return 1.0*pos + 25.0*cor + 4.0*mob
-    elif empties > 15:
-        return 1.2*pos + 30.0*cor + 6.0*mob
-    else:
-        return 0.8*pos + 35.0*cor + 2.0*mob + 8.0*disc_diff(board, player)
-
-# ========= AI（αβミニマックス） =========
-def order_moves(board: Board, player: int, moves: List[Move]) -> List[Move]:
-    def key(m: Move):
-        w = POS_WEIGHTS[m.r][m.c]
-        if (m.r, m.c) in [(0,0),(0,7),(7,0),(7,7)]:
-            w += 1000
-        return w
-    return sorted(moves, key=key, reverse=True)
-
-def alphabeta(board: Board, player_to_move: int, root_player: int,
-              depth: int, alpha: float, beta: float,
-              tt: Dict[Tuple[Tuple[int,...], int, int], Tuple[float, Optional[Move]]]
-              ) -> Tuple[float, Optional[Move]]:
-    key_grid = tuple(tuple(row) for row in board.grid)
-    key = (key_grid, player_to_move, depth)
-    if key in tt:
-        return tt[key]
-
-    if depth == 0 or board.game_over():
-        val = evaluate(board, root_player)
-        tt[key] = (val, None)
-        return val, None
-
-    moves = board.legal_moves(player_to_move)
-    if not moves:
-        val, _ = alphabeta(board, opponent(player_to_move),
-                           root_player, depth-1, alpha, beta, tt)
-        tt[key] = (val, None)
-        return val, None
-
-    best_move = None
-    if player_to_move == root_player:
-        value = -math.inf
-        for m in order_moves(board, player_to_move, moves):
-            b2 = board.copy()
-            b2.apply_move(player_to_move, m)
-            v, _ = alphabeta(b2, opponent(player_to_move),
-                             root_player, depth-1, alpha, beta, tt)
-            if v > value:
-                value, best_move = v, m
-            alpha = max(alpha, value)
-            if alpha >= beta:
-                break
-    else:
-        value = math.inf
-        for m in order_moves(board, player_to_move, moves):
-            b2 = board.copy()
-            b2.apply_move(player_to_move, m)
-            v, _ = alphabeta(b2, opponent(player_to_move),
-                             root_player, depth-1, alpha, beta, tt)
-            if v < value:
-                value, best_move = v, m
-            beta = min(beta, value)
-            if alpha >= beta:
-                break
-
-    tt[key] = (value, best_move)
-    return value, best_move
-
-# ★ AI関数名：myai
-def myai(board: Board, ai_player: int,
-         max_depth: int = 4, time_limit_sec: float = 1.2) -> Optional[Move]:
-    start = time.time()
-    best = None
-    tt: Dict[Tuple[Tuple[int,...], int, int], Tuple[float, Optional[Move]]] = {}
-    for depth in range(1, max_depth + 1):
-        if time.time() - start > time_limit_sec:
-            break
-        _, move = alphabeta(board, ai_player, ai_player,
-                            depth, -math.inf, math.inf, tt)
-        if time.time() - start > time_limit_sec:
-            break
-        if move is not None:
-            best = move
-    return best
-
-# ========= 入力処理 =========
-def parse_move(s: str) -> Optional[Move]:
-    s = s.strip().lower()
-    if s in ("pass", "p"):
-        return None
-    if len(s) == 2 and s[0] in "abcdefgh" and s[1] in "12345678":
-        c = ord(s[0]) - ord("a")
-        r = int(s[1]) - 1
-        return Move(r, c)
-    parts = s.replace(",", " ").split()
-    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-        r = int(parts[0]) - 1
-        c = int(parts[1]) - 1
-        if inside(r, c):
-            return Move(r, c)
-    return None
-
-def move_to_str(m: Move) -> str:
-    return f"{chr(ord('a')+m.c)}{m.r+1}"
-
-# ========= ゲームループ =========
-def main():
-    board = Board()
-    human = BLACK
-    ai = WHITE
-
-    print("Othello: 人間=●(黒)  AI=○(白)")
-    print("入力例: d3  または 3 4   / パスは 'pass'")
-    print()
-
-    turn = BLACK
-    while not board.game_over():
-        board.print()
-        print()
-
-        if not board.has_any_move(turn):
-            print(("●" if turn == BLACK else "○") + " はパス\n")
-            turn = opponent(turn)
-            continue
-
-        if turn == human:
-            while True:
-                s = input("あなたの手: ")
-                m = parse_move(s)
-                if m and board.apply_move(human, m):
+            if board[r][c] != EMPTY:
+                continue
+            for dr, dc in DIRECTIONS:
+                if flippable_in_direction(board, player, r, c, dr, dc):
+                    moves.append((r,c))
                     break
-                print("その手は置けません")
-        else:
-            print("AI思考中...")
-            m = myai(board, ai_player=ai, max_depth=5, time_limit_sec=1.5)
-            if m:
-                board.apply_move(ai, m)
-                print(f"AIの手: {move_to_str(m)}\n")
+    return moves
 
-        turn = opponent(turn)
+def apply_move(board, player, r, c):
+    if board[r][c] != EMPTY:
+        return False
+    all_flips = []
+    for dr, dc in DIRECTIONS:
+        all_flips += flippable_in_direction(board, player, r, c, dr, dc)
+    if not all_flips:
+        return False
+    board[r][c] = player
+    for rr, cc in all_flips:
+        board[rr][cc] = player
+    return True
 
-    board.print()
-    b, w = board.count()
-    print("\n=== 終局 ===")
-    if b > w:
-        print(f"あなたの勝ち！ ●={b} ○={w}")
-    elif w > b:
-        print(f"AIの勝ち。 ●={b} ○={w}")
+def copy_board(board):
+    return [row[:] for row in board]
+
+def to_coord(r,c):
+    return chr(ord('a')+c) + str(r+1)
+
+def parse_move(s):
+    s = (s or "").strip().lower().replace(" ", "")
+    if len(s) < 2:
+        return None
+    # letter+digit or digit+letter
+    if s[0].isalpha() and s[1:].isdigit():
+        col_ch = s[0]
+        row_ch = s[1:]
+    elif s[-1].isalpha() and s[:-1].isdigit():
+        row_ch = s[:-1]
+        col_ch = s[-1]
     else:
-        print(f"引き分け。 ●={b} ○={w}")
+        return None
+    if not ("a" <= col_ch <= "h"):
+        return None
+    try:
+        row = int(row_ch) - 1
+    except:
+        return None
+    col = ord(col_ch) - ord('a')
+    if not in_bounds(row,col):
+        return None
+    return (row,col)
 
-if __name__ == "__main__":
-    main()
+def evaluate_simple(board, cpu):
+    # stone diff
+    b_cnt, w_cnt = count_stones(board)
+    diff = (w_cnt - b_cnt) if cpu == WHITE else (b_cnt - w_cnt)
+
+    # corners
+    corner_score = 0
+    for (r,c) in CORNERS:
+        if board[r][c] == cpu:
+            corner_score += 50
+        elif board[r][c] == opponent(cpu):
+            corner_score -= 50
+
+    # danger near empty corners
+    danger_score = 0
+    near = X_SQUARES | C_SQUARES
+    for (r,c) in near:
+        cr = 0 if r < 4 else 7
+        cc = 0 if c < 4 else 7
+        if board[cr][cc] == EMPTY:
+            if board[r][c] == cpu:
+                danger_score -= 12
+            elif board[r][c] == opponent(cpu):
+                danger_score += 12
+
+    return diff + corner_score + danger_score
+
+def cpu_choose_move(board, cpu):
+    moves = get_valid_moves(board, cpu)
+    if not moves:
+        return None
+    corners = [m for m in moves if m in CORNERS]
+    if corners:
+        return random.choice(corners)
+
+    best_score = None
+    best_moves = []
+    for (r,c) in moves:
+        b2 = copy_board(board)
+        apply_move(b2, cpu, r, c)
+        sc = evaluate_simple(b2, cpu)
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best_moves = [(r,c)]
+        elif sc == best_score:
+            best_moves.append((r,c))
+    return random.choice(best_moves)
+
+def board_html(board, valid_moves_for_human):
+    # render as HTML table (green board). highlight valid moves.
+    vm = set(valid_moves_for_human)
+    def cell_style(r,c,cell):
+        base = "width:38px;height:38px;text-align:center;vertical-align:middle;border:1px solid #333;"
+        if (r,c) in vm:
+            base += "background:#a8d5a2;"  # highlight
+        else:
+            base += "background:#2e7d32;"
+        base += "font-size:22px;font-weight:700;color:white;"
+        return base
+
+    cols = "abcdefgh"
+    html = []
+    html.append("<div style='font-family:monospace'>")
+    html.append("<div style='margin-bottom:6px'>Columns: a b c d e f g h</div>")
+    html.append("<table style='border-collapse:collapse'>")
+    # header row
+    html.append("<tr><td style='width:24px'></td>")
+    for c in range(8):
+        html.append(f"<td style='width:38px;text-align:center;font-weight:700'>{cols[c]}</td>")
+    html.append("</tr>")
+    for r in range(8):
+        html.append("<tr>")
+        html.append(f"<td style='width:24px;text-align:center;font-weight:700'>{r+1}</td>")
+        for c in range(8):
+            v = board[r][c]
+            ch = "●" if v == BLACK else ("○" if v == WHITE else "")
+            html.append(f"<td style='{cell_style(r,c,v)}'>{ch}</td>")
+        html.append("</tr>")
+    html.append("</table></div>")
+    return "".join(html)
+
+# ---- UI / Game State ----
+board = new_board()
+turn = BLACK
+consecutive_passes = 0
+game_over = False
+
+move_box = widgets.Text(
+    value="",
+    placeholder="e.g. d3",
+    description="Move:",
+    layout=widgets.Layout(width="220px")
+)
+place_btn = widgets.Button(description="Place", button_style="primary")
+reset_btn = widgets.Button(description="Reset", button_style="warning")
+msg = widgets.HTML("")
+out = widgets.Output()
+
+def status_text():
+    b_cnt, w_cnt = count_stones(board)
+    return f"Score: B={b_cnt}  W={w_cnt} &nbsp; | &nbsp; Turn: <b>{turn}</b> (You=B, CPU=W)"
+
+def valid_moves_text(moves):
+    return "Valid moves: " + (" ".join(sorted(to_coord(r,c) for r,c in moves)) if moves else "(none)")
+
+def render():
+    clear_output(wait=True)
+    human_valid = get_valid_moves(board, BLACK)
+    display(HTML("<h3>Othello (Human vs CPU) - Colab</h3>"))
+    display(HTML(f"<div style='margin:6px 0'>{status_text()}</div>"))
+    display(HTML(board_html(board, human_valid if turn == BLACK and not game_over else [])))
+    display(widgets.HBox([move_box, place_btn, reset_btn]))
+    display(msg)
+
+def end_if_needed():
+    global game_over
+    full = all(cell != EMPTY for row in board for cell in row)
+    if consecutive_passes >= 2 or full:
+        b_cnt, w_cnt = count_stones(board)
+        if b_cnt > w_cnt:
+            result = "BLACK (You) wins!"
+        elif w_cnt > b_cnt:
+            result = "WHITE (CPU) wins!"
+        else:
+            result = "Draw!"
+        game_over = True
+        msg.value = f"<b>Game Over:</b> {result}"
+        return True
+    return False
+
+def do_cpu_turns_if_needed():
+    global turn, consecutive_passes
+    # CPU plays whenever it's CPU's turn, handle passes too.
+    while not game_over and turn == WHITE:
+        cpu_moves = get_valid_moves(board, WHITE)
+        if cpu_moves:
+            consecutive_passes = 0
+            mv = cpu_choose_move(board, WHITE)
+            r, c = mv
+            apply_move(board, WHITE, r, c)
+            msg.value = f"CPU plays: <b>{to_coord(r,c)}</b>"
+            turn = BLACK
+        else:
+            consecutive_passes += 1
+            msg.value = "CPU has no valid moves → PASS"
+            turn = BLACK
+        if end_if_needed():
+            return
+
+def on_place(_):
+    global turn, consecutive_passes, game_over
+    if game_over:
+        msg.value = "Game is over. Press Reset."
+        render()
+        return
+    if turn != BLACK:
+        msg.value = "Wait for CPU..."
+        render()
+        return
+
+    human_moves = get_valid_moves(board, BLACK)
+    if not human_moves:
+        # human must pass
+        consecutive_passes += 1
+        msg.value = "You have no valid moves → PASS"
+        turn = WHITE
+        if end_if_needed():
+            render()
+            return
+        do_cpu_turns_if_needed()
+        render()
+        return
+
+    mv = parse_move(move_box.value)
+    move_box.value = ""
+    if mv is None:
+        msg.value = "Invalid format. Use like d3 (or 3d)."
+        render()
+        return
+
+    r, c = mv
+    if not apply_move(board, BLACK, r, c):
+        msg.value = "Illegal move. Choose from valid moves."
+        render()
+        return
+
+    consecutive_passes = 0
+    msg.value = f"You played: <b>{to_coord(r,c)}</b>"
+    turn = WHITE
+
+    if end_if_needed():
+        render()
+        return
+
+    do_cpu_turns_if_needed()
+    render()
+
+def on_reset(_):
+    global board, turn, consecutive_passes, game_over
+    board = new_board()
+    turn = BLACK
+    consecutive_passes = 0
+    game_over = False
+    msg.value = "Reset done."
+    move_box.value = ""
+    render()
+
+place_btn.on_click(on_place)
+reset_btn.on_click(on_reset)
+
+render()
